@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+// Paquete de Protocol Buffers para el laboratorio DiscoPass.
+// Aqui se definen TODOS los mensajes y servicios que viajan por gRPC
+// entre las entidades del sistema (broker, productores, nodos DB,
+// banco y consumidores).
+package discopass;
+
+// go_package indica donde se genera el codigo Go y con que nombre de paquete (pb).
+option go_package = "discopass/proto;pb";
+
+// ----------------------------------------------------------------------------
+// Mensajes basicos reutilizados por varios servicios
+// ----------------------------------------------------------------------------
+
+// Vacio: peticion/respuesta sin datos (cuando no hace falta enviar nada).
+message Vacio {}
+
+// Ack: respuesta generica de confirmacion (ok/no + un mensaje explicativo).
+message Ack {
+  bool ok = 1;
+  string mensaje = 2;
+}
+
+// Registro: una entidad se identifica ante el broker antes de operar.
+// tipo = "discoteca" | "usuario" | "db" | "banco".
+message Registro {
+  string id = 1;
+  string tipo = 2;
+}
+
+// ----------------------------------------------------------------------------
+// Evento (la "entrada"/fiesta que publica una discoteca)
+// ----------------------------------------------------------------------------
+message Evento {
+  string evento_id = 1;          // UUIDv4 unico -> permite idempotencia
+  string discoteca = 2;          // nombre de la discoteca productora
+  string nombre_evento = 3;
+  string categoria = 4;          // debe pertenecer a la lista de categorias validas
+  string comuna = 5;
+  int64  precio = 6;
+  int64  stock = 7;              // entradas disponibles (debe ser > 0)
+  string fecha_evento = 8;
+  string fecha_publicacion = 9;
+}
+
+// Respuesta del broker al productor cuando publica un evento.
+message PublicarResp {
+  bool   aceptado = 1;
+  string motivo = 2;             // razon de rechazo (categoria invalida, duplicado, etc.)
+}
+
+// ----------------------------------------------------------------------------
+// Consultas y compras de los usuarios
+// ----------------------------------------------------------------------------
+message ConsultaReq { string id_usuario = 1; }
+
+message ListaEventos { repeated Evento eventos = 1; }
+
+message CompraReq {
+  string id_usuario = 1;
+  string evento_id = 2;
+  string medio_pago = 3;         // "debito", "credito", "efectivo", ...
+}
+
+message CompraResp {
+  bool   aprobada = 1;
+  string ticket_id = 2;          // solo si la compra fue aprobada
+  string motivo = 3;             // razon de rechazo o estado (pendiente, sin stock, ...)
+  string nombre_evento = 4;
+  int64  precio = 5;
+}
+
+// ----------------------------------------------------------------------------
+// Tickets e historial
+// ----------------------------------------------------------------------------
+message Ticket {
+  string ticket_id = 1;          // identificador unico generado por el broker
+  string id_usuario = 2;
+  string evento_id = 3;
+  string nombre_evento = 4;
+  int64  precio = 5;
+  string fecha_compra = 6;
+}
+
+message HistorialReq { string id_usuario = 1; }
+
+message ListaTickets { repeated Ticket tickets = 1; }
+
+// ----------------------------------------------------------------------------
+// Banco USM (servicio de pago simulado)
+// ----------------------------------------------------------------------------
+message PagoReq {
+  string id_usuario = 1;
+  int64  monto = 2;
+  string medio_pago = 3;
+}
+
+message PagoResp { bool aprobado = 1; }
+
+// ----------------------------------------------------------------------------
+// Nodos de Base de Datos distribuida
+// ----------------------------------------------------------------------------
+
+// DBItem: una unidad de informacion a replicar (un evento o un ticket).
+message DBItem {
+  string tipo = 1;               // "evento" | "ticket"
+  Evento evento = 2;
+  Ticket ticket = 3;
+}
+
+// Backlog: estado completo (eventos + tickets) que un nodo pide al broker
+// cuando se reincorpora tras una caida, para resincronizarse.
+message BacklogReq { string id_nodo = 1; }
+message Backlog {
+  repeated Evento eventos = 1;
+  repeated Ticket tickets = 2;
+}
+
+// ----------------------------------------------------------------------------
+// SERVICIOS gRPC
+// ----------------------------------------------------------------------------
+
+// Servicio que expone el Broker Central. Es el unico punto de coordinacion:
+// lo usan productores, usuarios y los nodos DB (para pedir backlog).
+service Broker {
+  rpc RegistrarEntidad (Registro)    returns (Ack);
+  rpc PublicarEvento   (Evento)      returns (PublicarResp);
+  rpc ConsultarEventos (ConsultaReq) returns (ListaEventos);
+  rpc ComprarEntrada   (CompraReq)   returns (CompraResp);
+  rpc ObtenerHistorial (HistorialReq) returns (ListaTickets);
+  rpc SolicitarBacklog (BacklogReq)  returns (Backlog);
+}
+
+// Servicio que expone cada Nodo DB. Solo lo usa el broker.
+service NodoDB {
+  rpc Escribir    (DBItem)      returns (Ack);
+  rpc LeerEventos (Vacio)       returns (ListaEventos);
+  rpc LeerTickets (HistorialReq) returns (ListaTickets);
+  rpc Salud       (Vacio)       returns (Ack);   // health-check / consulta de estado
+}
+
+// Servicio que expone el Banco USM. Solo lo usa el broker.
+service Banco {
+  rpc ValidarPago (PagoReq) returns (PagoResp);
+}
