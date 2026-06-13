@@ -1,0 +1,129 @@
+version: "3.9"
+
+services:
+  broker:
+    build:
+      context: .
+      args:
+        ENTIDAD: broker
+    ports:
+      - "50051:50051"
+    command: ["-puerto", "50051", "-nodos", "db1:50061,db2:50062,db3:50063", "-banco", "banco:50052"]
+    networks:
+      - discopass
+
+  db1:
+    build:
+      context: .
+      args:
+        ENTIDAD: dbnode
+    command: ["-id", "DB1", "-puerto", "50061", "-broker", "broker:50051"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  db2:
+    build:
+      context: .
+      args:
+        ENTIDAD: dbnode
+    command: ["-id", "DB2", "-puerto", "50062", "-broker", "broker:50051"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  db3:
+    build:
+      context: .
+      args:
+        ENTIDAD: dbnode
+    command: ["-id", "DB3", "-puerto", "50063", "-broker", "broker:50051"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  banco:
+    build:
+      context: .
+      args:
+        ENTIDAD: banco
+    ports:
+      - "50052:50052"
+    command: ["-puerto", "50052", "-broker", "broker:50051"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  dataclub:
+    build:
+      context: .
+      args:
+        ENTIDAD: productor
+    command: ["-discoteca", "DataClub", "-broker", "broker:50051", "-catalogo", "config/catalogo_30.json"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  dockersnight:
+    build:
+      context: .
+      args:
+        ENTIDAD: productor
+    command: ["-discoteca", "Dockers Night", "-broker", "broker:50051", "-catalogo", "config/catalogo_30.json"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  golounge:
+    build:
+      context: .
+      args:
+        ENTIDAD: productor
+    command: ["-discoteca", "GoLounge", "-broker", "broker:50051", "-catalogo", "config/catalogo_30.json"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  georgiehouse:
+    build:
+      context: .
+      args:
+        ENTIDAD: productor
+    command: ["-discoteca", "GeorgieHouse", "-broker", "broker:50051", "-catalogo", "config/catalogo_30.json"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  cliente_a:
+    build:
+      context: .
+      args:
+        ENTIDAD: consumidor
+    command: ["-id", "ClienteA", "-broker", "broker:50051", "-medio", "credito", "-intervalo", "15"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+  cliente_b:
+    build:
+      context: .
+      args:
+        ENTIDAD: consumidor
+    command: ["-id", "ClienteB", "-broker", "broker:50051", "-medio", "debito", "-intervalo", "20"]
+    networks:
+      - discopass
+    depends_on:
+      - broker
+
+networks:
+  discopass:
+    driver: bridge
