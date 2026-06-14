@@ -1,105 +1,97 @@
-# INF343 — Laboratorio 2: DiscoPass
+# INF343 — Laboratorio 2: DiscoPass (variante distribuida)
 
-Sistema distribuido de venta y validación de entradas para discotecas.
-Comunicación estricta por **gRPC + Protocol Buffers**.
-Cada entidad corre en un contenedor Docker separado.
+Misma aplicación Go + gRPC que `lab2-dockercompose`, pero ejecutándose sobre una
+**red cerrada de 4 máquinas físicas** del laboratorio en lugar de contenedores
+Docker. El código Go es **idéntico**: todas las direcciones se inyectan por flags
+(`-broker`, `-nodos`, `-banco`, `-puerto`), así que la migración es puramente de
+orquestación (SSH en vez de `docker compose`).
 
-## Integrantes y roles
+## Topología (red cerrada)
 
-- **Broker Central** — coordinación, validación, escritura/lectura distribuida
-- **Nodos DB (DB1, DB2, DB3)** — almacenamiento replicado (N=3, W=2, R=2)
-- **Banco USM** — servicio de pago probabilístico
-- **Productores (DataClub, Dockers Night, GoLounge, GeorgieHouse)** — generan eventos
-- **Consumidores (ClienteA, ClienteB)** — compran entradas
-
-## Arquitectura
+| Máquina | IP gRPC | Componentes | Puertos |
+|---|---|---|---|
+| dist057 | 10.35.168.67 | **Broker** (único que habla con DB/Banco) | 50051 |
+| dist058 | 10.35.168.68 | DataClub, DockersNight, GoLounge, GeorgieHouse + **DB3** | 50063 |
+| dist059 | 10.35.168.69 | ClienteA, ClienteB + **DB2** | 50062 |
+| dist060 | 10.35.168.70 | **Banco USM** + **DB1** | 50052, 50061 |
 
 ```
-Productores ──gRPC──> Broker ──gRPC──> Nodos DB (DB1, DB2, DB3)
-Consumidores ──gRPC──> Broker ──gRPC──> Banco USM
+Productores(058) ─┐                      ┌─ DB1(060) DB2(059) DB3(058)
+                  ├─gRPC→ Broker(057) ─gRPC┤
+Consumidores(059)─┘                      └─ Banco(060)
 ```
 
-- **Broker** = único punto de coordinación (registro, validación, idempotencia,
-  escritura N=3/W=2, lectura R=2, resincronización de nodos caídos, reporte final).
-- **Nodos DB**: replicación tipo DynamoDB con consistencia eventual.
-  Fallo simulado interno (caída temporal + resincronización vía `SolicitarBacklog`).
-- **Banco USM**: aprueba pagos con 80% probabilidad (90% si medio_pago=credito).
-  Timeout de 3s en el broker → compra queda "pendiente" si el banco no responde.
-- **Resincronización mediada por broker**: cuando un nodo revive, pide el backlog
-  al broker (no replica nodo-a-nodo), respetando la regla de que el broker es el
-  único punto autorizado.
+Toda la topología (IPs, puertos, direcciones derivadas) vive en **`topologia.env`**,
+única fuente de verdad que comparten `run.sh` y `disco`.
 
-## Cómo ejecutar
+## Requisito previo: `~/.ssh/config` (en la máquina de control)
 
-### Opción 1: Todo en una máquina (pruebas)
+El orquestador usa el comando plano `ssh dist0NN` (NO los alias `ssh-0NN`, que no
+existen en shells no interactivos). Añade en `~/.ssh/config`:
+
+```
+Host dist057 dist058 dist059 dist060
+    HostName %h.inf.santiago.usm.cl
+    User dist
+```
+
+Verifica: `ssh dist057 hostname` debe responder sin pedir el usuario.
+
+## Uso
+
+Dos modos, intercambiables (comparten `topologia.env`):
+
+### Modo A — Demo en vivo (4 terminales, una por máquina)
+
+Logs a color en tiempo real, separados por máquina. Primero despliega los binarios:
 
 ```bash
-make up
+make build && make sync       # compila a bin/ y rsync a las 4 máquinas
 ```
 
-### Opción 2: Distribuido en 4 VMs
+Luego, en **4 terminales** distintas:
 
 ```bash
-# VM1: Broker
-make docker-VM1
-
-# VM2: Productores + DB3
-make docker-VM2
-
-# VM3: Consumidores + DB2
-make docker-VM3
-
-# VM4: Banco + DB1
-make docker-VM4
+ssh dist057   # → cd discopass && ./run.sh dist057     (Broker + banner)
+ssh dist058   # → cd discopass && ./run.sh dist058     (4 productores + DB3)
+ssh dist059   # → cd discopass && ./run.sh dist059     (2 consumidores + DB2)
+ssh dist060   # → cd discopass && ./run.sh dist060     (Banco + DB1)
 ```
 
-### Opción 3: Sin Docker (desarrollo rápido)
+Arranca dist057 primero por claridad (no es obligatorio: cada componente reintenta
+el registro hasta que el broker está vivo). `Ctrl+C` en una terminal apaga todos
+los procesos de esa máquina.
+
+### Modo B — Orquestador `disco` (el "programa principal")
+
+Un comando levanta/apaga todo desde la máquina de control vía SSH:
 
 ```bash
-# Terminal 1
-go run ./cmd/broker -puerto 50051 -nodos localhost:50061,localhost:50062,localhost:50063 -banco localhost:50052
-
-# Terminales 2-4
-go run ./cmd/dbnode -id DB1 -puerto 50061 -broker localhost:50051
-go run ./cmd/dbnode -id DB2 -puerto 50062 -broker localhost:50051
-go run ./cmd/dbnode -id DB3 -puerto 50063 -broker localhost:50051
-
-# Terminal 5
-go run ./cmd/banco -puerto 50052 -broker localhost:50051
-
-# Terminal 6
-go run ./cmd/productor -discoteca DataClub -broker localhost:50051 -catalogo config/catalogo_30.json
-
-# Terminal 7
-go run ./cmd/consumidor -id ClienteA -broker localhost:50051 -medio credito -intervalo 10
+make deploy     # build + sync + up  (lanza las 4 máquinas en background)
+make logs       # tail -f de las 4 (prefijado por máquina)
+make status     # procesos vivos por máquina
+make fetch      # trae Reporte.txt y usuario_*.csv a ./resultados/
+make down       # detiene los procesos en las 4 máquinas
 ```
 
-## Configuración (flags / variables de entorno)
+Equivalentes con el script directo: `./disco {build|sync|up|down|logs [maq]|status|fetch|deploy}`.
 
-| Flag | Variable | Default | Descripción |
-|------|----------|---------|-------------|
-| `-puerto` | `PUERTO` | `50051` (broker) | Puerto del servicio |
-| `-nodos` | `NODOS` | `localhost:...` | Direcciones de nodos DB (broker) |
-| `-banco` | `BANCO` | `localhost:50052` | Dirección del banco (broker) |
-| `-broker` | `BROKER` | `localhost:50051` | Dirección del broker |
-| `-id` | `ID` | `DB1` / `ClienteA` | Identificador de la entidad |
-| `-min` / `-max` | `MIN_INTERVAL` / `MAX_INTERVAL` | `30` / `40` | Intervalo entre publicaciones (productor) |
-| `-intervalo` | `INTERVALO` | `10` | Segundos entre compras (consumidor) |
-| `-medio` | `MEDIO_PAGO` | `debito` | Medio de pago del consumidor |
-| `-catalogo` | `CATALOGO` | `config/catalogo_30.json` | Catálogo de eventos (productor) |
-| `-discoteca` | `DISCOTECA` | `DataClub` | Nombre de la discoteca (productor) |
-| `-fallos` | `FALLOS` | `true` | Simular fallos temporales |
+## Qué observar (validación distribuida)
 
-## Reportes
+- **Quórum N=3/W=2/R=2**: `PublicarEvento` → `W≥2 ACK`; `ConsultarEventos (R=2 OK)`.
+- **Tolerancia a fallos**: mata un DB → `make down` no; usa
+  `ssh dist058 pkill -f dbnode`. El broker sigue con W=2/R=2; al relanzar, el nodo
+  pide backlog y se **resincroniza**.
+- **Regla de oro**: solo el broker dialoga con DB/Banco — las IPs de DB/Banco solo
+  aparecen en los flags `-nodos`/`-banco` del broker (dist057), nunca en productores
+  ni consumidores.
 
-- **Reporte.txt**: se genera automáticamente en el directorio del broker
-  (cada 20s y al finalizar). Contiene:
-  1. Resumen de discotecas
-  2. Estado de nodos DB
-  3. Compras y tickets
-  4. Estado del servicio de pago
-  5. Fallos y recuperaciones
-  6. Conclusión
+## Resultados
 
-- **CSV de usuarios**: se generan `usuario_ClienteA.csv` y `usuario_ClienteB.csv`
-  con el historial de compras de cada consumidor.
+- `Reporte.txt` (dist057, cada 20s) y `usuario_ClienteA/B.csv` (dist059).
+  `make fetch` los copia a `./resultados/` en la máquina de control.
+
+## Configuración
+
+Para cambiar IPs, puertos o el directorio remoto, edita **`topologia.env`**.
+No hay direcciones hardcodeadas en el código Go ni en los scripts.

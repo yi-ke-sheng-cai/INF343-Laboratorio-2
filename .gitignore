@@ -1,0 +1,6 @@
+/bin/
+/resultados/
+.claude/
+run.log
+Reporte.txt
+usuario_*.csv

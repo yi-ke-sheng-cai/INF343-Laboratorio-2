@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# disco — orquestador del ecosistema distribuido DiscoPass ("programa principal").
+#
+# Desde la máquina de CONTROL coordina las 4 máquinas del lab vía `ssh dist0NN`
+# (comando plano, NO los alias ssh-0NN). Una sola fuente de verdad: topologia.env;
+# para arrancar invoca el mismo run.sh de cada máquina → cero lógica duplicada.
+#
+#   ./disco build         compila los 5 binarios a bin/ (linux/amd64)
+#   ./disco sync          rsync de binarios+config+scripts a las 4 máquinas
+#   ./disco up            ssh a las 4 y lanza cada subconjunto en background
+#   ./disco down          ssh a las 4 y mata los procesos
+#   ./disco logs [maq]    tail -f de run.log (de una máquina o de las 4)
+#   ./disco status        procesos vivos por máquina
+#   ./disco fetch         trae Reporte.txt (057) y usuario_*.csv (059)
+#   ./disco deploy        build + sync + up   (ciclo completo)
+set -euo pipefail
+
+cd "$(dirname "$0")"
+# shellcheck disable=SC1091
+source ./topologia.env
+
+MAQUINAS=(dist057 dist058 dist059 dist060)
+BINARIOS=(broker dbnode banco productor consumidor)
+
+# maquina → target SSH (definido en topologia.env como SSH_0NN)
+ssh_target() {
+  case "$1" in
+    dist057) echo "$SSH_057";; dist058) echo "$SSH_058";;
+    dist059) echo "$SSH_059";; dist060) echo "$SSH_060";;
+  esac
+}
+
+# ---------- build ----------
+cmd_build() {
+  echo "[disco] compilando binarios (linux/amd64) → bin/"
+  mkdir -p bin
+  for b in "${BINARIOS[@]}"; do
+    echo "  - $b"
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "bin/$b" "./cmd/$b"
+  done
+}
+
+# ---------- sync ----------
+cmd_sync() {
+  for m in "${MAQUINAS[@]}"; do
+    local t; t="$(ssh_target "$m")"
+    echo "[disco] sync → $m ($t):$REMOTE_DIR/"
+    ssh "$t" "mkdir -p $REMOTE_DIR"
+    rsync -az --delete-after \
+      bin/ "$t:$REMOTE_DIR/bin/"
+    rsync -az config/ "$t:$REMOTE_DIR/config/"
+    rsync -az scripts/ "$t:$REMOTE_DIR/scripts/"
+    rsync -az run.sh topologia.env "$t:$REMOTE_DIR/"
+  done
+}
+
+# Lanza run.sh en una máquina, detachado (setsid) y con log a run.log.
+_arranca() {
+  local m="$1" t; t="$(ssh_target "$1")"
+  echo "[disco] up → $m"
+  ssh "$t" "cd $REMOTE_DIR && setsid nohup ./run.sh $m >run.log 2>&1 </dev/null & echo '  pid='\$!"
+}
+
+# ---------- up ----------
+cmd_up() {
+  # Broker primero (claridad); el resto reintenta el registro, así que el
+  # orden no es crítico, pero arrancamos 057 y damos un respiro.
+  _arranca dist057
+  sleep 2
+  for m in dist058 dist059 dist060; do _arranca "$m"; done
+  echo "[disco] arriba. Logs: ./disco logs   ·   Apagar: ./disco down"
+}
+
+# ---------- down ----------
+cmd_down() {
+  local re; re="$(IFS='|'; echo "${BINARIOS[*]}")"
+  for m in "${MAQUINAS[@]}"; do
+    local t; t="$(ssh_target "$m")"
+    echo "[disco] down → $m"
+    ssh "$t" "pkill -f '$REMOTE_DIR/bin/($re)' 2>/dev/null; pkill -f 'run.sh $m' 2>/dev/null; true"
+  done
+}
+
+# ---------- logs ----------
+cmd_logs() {
+  if [[ $# -ge 1 ]]; then
+    local t; t="$(ssh_target "$1")"
+    ssh -t "$t" "tail -n 200 -f $REMOTE_DIR/run.log"
+    return
+  fi
+  echo "[disco] tail -f de las 4 máquinas (Ctrl+C para salir)"
+  local tpids=()
+  for m in "${MAQUINAS[@]}"; do
+    local t; t="$(ssh_target "$m")"
+    ssh "$t" "tail -n 50 -f $REMOTE_DIR/run.log" 2>/dev/null \
+      | sed "s/^/[$m] /" &
+    tpids+=("$!")
+  done
+  trap 'kill "${tpids[@]}" 2>/dev/null || true' INT TERM EXIT
+  wait
+}
+
+# ---------- status ----------
+cmd_status() {
+  local re; re="$(IFS='|'; echo "${BINARIOS[*]}")"
+  for m in "${MAQUINAS[@]}"; do
+    local t; t="$(ssh_target "$m")"
+    echo "── $m ──"
+    ssh "$t" "pgrep -af '$REMOTE_DIR/bin/($re)' || echo '  (sin procesos)'"
+  done
+}
+
+# ---------- fetch ----------
+cmd_fetch() {
+  mkdir -p resultados
+  echo "[disco] trayendo Reporte.txt (dist057) y usuario_*.csv (dist059)"
+  rsync -az "$(ssh_target dist057):$REMOTE_DIR/Reporte.txt" resultados/ 2>/dev/null || \
+    echo "  (aún no hay Reporte.txt)"
+  rsync -az "$(ssh_target dist059):$REMOTE_DIR/usuario_"*.csv resultados/ 2>/dev/null || \
+    echo "  (aún no hay CSV de usuarios)"
+  ls -la resultados/
+}
+
+# ---------- deploy ----------
+cmd_deploy() { cmd_build; cmd_sync; cmd_up; }
+
+case "${1:-}" in
+  build)  cmd_build;;
+  sync)   cmd_sync;;
+  up)     cmd_up;;
+  down)   cmd_down;;
+  logs)   shift; cmd_logs "$@";;
+  status) cmd_status;;
+  fetch)  cmd_fetch;;
+  deploy) cmd_deploy;;
+  *) echo "uso: $0 {build|sync|up|down|logs [maq]|status|fetch|deploy}" >&2; exit 1;;
+esac
