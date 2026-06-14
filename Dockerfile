@@ -1,6 +1,7 @@
 ARG ENTIDAD
 
 FROM golang:1.25-alpine AS builder
+ARG ENTIDAD
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"discopass/colores"
 	pb "discopass/proto"
 
 	"google.golang.org/grpc"
@@ -30,6 +31,7 @@ type servidorNodoDB struct {
 }
 
 func main() {
+	colores.Activar()
 	id := flag.String("id", env("ID", "DB1"), "identificador del nodo (DB1/DB2/DB3)")
 	puerto := flag.String("puerto", env("PUERTO", "50061"), "puerto donde escucha")
 	dirBroker := flag.String("broker", env("BROKER", "localhost:50051"), "direccion del broker")
@@ -45,7 +47,7 @@ func main() {
 
 	connBroker, err := grpc.NewClient(*dirBroker, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("[%s] no pude conectar al broker: %v", *id, err)
+		log.Fatalf("[%s][FATAL] no pude conectar al broker: %v", *id, err)
 	}
 	s.brokerPb = pb.NewBrokerClient(connBroker)
 
@@ -53,7 +55,7 @@ func main() {
 
 	lis, err := net.Listen("tcp", ":"+*puerto)
 	if err != nil {
-		log.Fatalf("[%s] no pude escuchar en :%s: %v", *id, *puerto, err)
+		log.Fatalf("[%s][FATAL] no pude escuchar en :%s: %v", *id, *puerto, err)
 	}
 	grpcServer := grpc.NewServer()
 	pb.RegisterNodoDBServer(grpcServer, s)
@@ -62,9 +64,9 @@ func main() {
 		go s.simularFallos()
 	}
 
-	log.Printf("[%s] escuchando en :%s | broker=%s | fallos=%v", *id, *puerto, *dirBroker, s.fallos)
+	log.Printf("[%s][INICIO] escuchando en :%s | broker=%s | fallos=%v", *id, *puerto, *dirBroker, s.fallos)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("[%s] servidor detenido: %v", *id, err)
+		log.Fatalf("[%s][FATAL] servidor detenido: %v", *id, err)
 	}
 }
 
@@ -74,10 +76,10 @@ func (s *servidorNodoDB) registrarEnBroker(dirBroker string) {
 		ack, err := s.brokerPb.RegistrarEntidad(ctx, &pb.Registro{Id: s.id, Tipo: "db"})
 		cancel()
 		if err == nil && ack.Ok {
-			log.Printf("[%s] registrado en broker exitosamente", s.id)
+			log.Printf("[%s][REGISTRO] registrado en broker exitosamente", s.id)
 			return
 		}
-		log.Printf("[%s] esperando al broker para registrarse... (%v)", s.id, err)
+		log.Printf("[%s][ESPERA] esperando al broker para registrarse... (%v)", s.id, err)
 		time.Sleep(2 * time.Second)
 	}
 }
@@ -92,12 +94,12 @@ func (s *servidorNodoDB) Escribir(_ context.Context, item *pb.DBItem) (*pb.Ack, 
 	case "evento":
 		if item.Evento != nil {
 			s.eventos[item.Evento.EventoId] = item.Evento
-			log.Printf("[%s] escritura evento %s OK", s.id, item.Evento.EventoId)
+			log.Printf("[%s][ESCRITURA_OK] escritura evento %s OK", s.id, item.Evento.EventoId)
 		}
 	case "ticket":
 		if item.Ticket != nil {
 			s.tickets[item.Ticket.TicketId] = item.Ticket
-			log.Printf("[%s] escritura ticket %s OK", s.id, item.Ticket.TicketId)
+			log.Printf("[%s][ESCRITURA_OK] escritura ticket %s OK", s.id, item.Ticket.TicketId)
 		}
 	default:
 		return &pb.Ack{Ok: false, Mensaje: "tipo desconocido"}, nil
@@ -158,7 +160,7 @@ func (s *servidorNodoDB) simularFallos() {
 		s.mu.Lock()
 		s.caido = true
 		s.mu.Unlock()
-		log.Printf("[%s] NODO CAIDO por %d segundos", s.id, segHastaCaer)
+		log.Printf("[%s][NODO_CAIDO] NODO CAIDO por %d segundos", s.id, segHastaCaer)
 
 		duracionCaida := 15 + rng.Intn(11)
 		time.Sleep(time.Duration(duracionCaida) * time.Second)
@@ -166,7 +168,7 @@ func (s *servidorNodoDB) simularFallos() {
 		s.mu.Lock()
 		s.caido = false
 		s.mu.Unlock()
-		log.Printf("[%s] NODO RECUPERADO, solicitando backlog...", s.id)
+		log.Printf("[%s][RECUPERACION] NODO RECUPERADO, solicitando backlog...", s.id)
 
 		s.resincronizar()
 	}
@@ -177,7 +179,7 @@ func (s *servidorNodoDB) resincronizar() {
 	backlog, err := s.brokerPb.SolicitarBacklog(ctx, &pb.BacklogReq{IdNodo: s.id})
 	cancel()
 	if err != nil {
-		log.Printf("[%s] error al solicitar backlog: %v", s.id, err)
+		log.Printf("[%s][ERROR] error al solicitar backlog: %v", s.id, err)
 		return
 	}
 	s.mu.Lock()
@@ -192,7 +194,7 @@ func (s *servidorNodoDB) resincronizar() {
 	nEv := len(backlog.Eventos)
 	nTk := len(backlog.Tickets)
 	s.mu.Unlock()
-	log.Printf("[%s] resincronizado: %d eventos, %d tickets", s.id, nEv, nTk)
+	log.Printf("[%s][RESINCRONIZADO] resincronizado: %d eventos, %d tickets", s.id, nEv, nTk)
 }
 
 func env(clave, defecto string) string {

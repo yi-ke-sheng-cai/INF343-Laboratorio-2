@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"discopass/colores"
 	pb "discopass/proto"
 
 	"google.golang.org/grpc"
@@ -18,6 +19,7 @@ import (
 )
 
 func main() {
+	colores.Activar()
 	id := flag.String("id", env("ID", "ClienteA"), "identificador del consumidor")
 	dirBroker := flag.String("broker", env("BROKER", "localhost:50051"), "direccion del broker")
 	medio := flag.String("medio", env("MEDIO_PAGO", "debito"), "medio de pago (credito/debito)")
@@ -33,7 +35,7 @@ func main() {
 
 	connBroker, err := grpc.NewClient(*dirBroker, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("[%s] no pude conectar al broker: %v", *id, err)
+		log.Fatalf("[%s][FATAL] no pude conectar al broker: %v", *id, err)
 	}
 	brokerPb := pb.NewBrokerClient(connBroker)
 
@@ -42,10 +44,10 @@ func main() {
 		ack, err := brokerPb.RegistrarEntidad(ctx, &pb.Registro{Id: *id, Tipo: "usuario"})
 		cancel()
 		if err == nil && ack.Ok {
-			log.Printf("[%s] registrado en broker exitosamente", *id)
+			log.Printf("[%s][REGISTRO] registrado en broker exitosamente", *id)
 			break
 		}
-		log.Printf("[%s] esperando al broker... (%v)", *id, err)
+		log.Printf("[%s][ESPERA] esperando al broker... (%v)", *id, err)
 		time.Sleep(2 * time.Second)
 	}
 
@@ -59,7 +61,7 @@ func main() {
 		mu.Unlock()
 
 		if nCompras > 0 && nCompras%5 == 0 {
-			log.Printf("[%s] simulando desconexion y recuperacion...", *id)
+			log.Printf("[%s][DESCONEXION] simulando desconexion y recuperacion...", *id)
 			mu.Lock()
 			comprados = map[string]bool{}
 			mu.Unlock()
@@ -69,14 +71,14 @@ func main() {
 			historial, err := brokerPb.ObtenerHistorial(ctx, &pb.HistorialReq{IdUsuario: *id})
 			cancel()
 			if err != nil {
-				log.Printf("[%s] error recuperando historial: %v", *id, err)
+				log.Printf("[%s][ERROR] error recuperando historial: %v", *id, err)
 			} else {
 				mu.Lock()
 				guardarCSV(*csvRuta, historial.Tickets, true)
 				for _, t := range historial.Tickets {
 					comprados[t.EventoId] = true
 				}
-				log.Printf("[%s] historial recuperado: %d tickets", *id, len(historial.Tickets))
+				log.Printf("[%s][HISTORIAL] historial recuperado: %d tickets", *id, len(historial.Tickets))
 				mu.Unlock()
 			}
 		}
@@ -85,7 +87,7 @@ func main() {
 		cartelera, err := brokerPb.ConsultarEventos(ctx, &pb.ConsultaReq{IdUsuario: *id})
 		cancel()
 		if err != nil {
-			log.Printf("[%s] error consultando eventos: %v", *id, err)
+			log.Printf("[%s][ERROR] error consultando eventos: %v", *id, err)
 			time.Sleep(time.Duration(*intervalo) * time.Second)
 			continue
 		}
@@ -100,13 +102,13 @@ func main() {
 		mu.Unlock()
 
 		if len(disponibles) == 0 {
-			log.Printf("[%s] no hay eventos disponibles sin comprar", *id)
+			log.Printf("[%s][SIN_EVENTOS] no hay eventos disponibles sin comprar", *id)
 			time.Sleep(time.Duration(*intervalo) * time.Second)
 			continue
 		}
 
 		evento := disponibles[rng.Intn(len(disponibles))]
-		log.Printf("[%s] comprando entrada para: %s (%s)", *id, evento.NombreEvento, evento.EventoId)
+		log.Printf("[%s][COMPRANDO] comprando entrada para: %s (%s)", *id, evento.NombreEvento, evento.EventoId)
 
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 		resp, err := brokerPb.ComprarEntrada(ctx2, &pb.CompraReq{
@@ -116,9 +118,9 @@ func main() {
 		})
 		cancel2()
 		if err != nil {
-			log.Printf("[%s] error en compra: %v", *id, err)
+			log.Printf("[%s][ERROR] error en compra: %v", *id, err)
 		} else if resp.Aprobada {
-			log.Printf("[%s] COMPRA APROBADA: ticket=%s evento=%s", *id, resp.TicketId, resp.NombreEvento)
+			log.Printf("[%s][COMPRA_OK] COMPRA APROBADA: ticket=%s evento=%s", *id, resp.TicketId, resp.NombreEvento)
 			mu.Lock()
 			comprados[evento.EventoId] = true
 			contadorCompras++
@@ -133,7 +135,7 @@ func main() {
 			guardarCSV(*csvRuta, []*pb.Ticket{ticket}, false)
 			mu.Unlock()
 		} else {
-			log.Printf("[%s] compra RECHAZADA: motivo=%s", *id, resp.Motivo)
+			log.Printf("[%s][RECHAZO] compra RECHAZADA: motivo=%s", *id, resp.Motivo)
 			if resp.Motivo == "sin stock" || resp.Motivo == "evento no disponible" || resp.Motivo == "compra duplicada" {
 				mu.Lock()
 				comprados[evento.EventoId] = true
@@ -152,7 +154,7 @@ func guardarCSV(ruta string, tickets []*pb.Ticket, sobreescribir bool) {
 	}
 	f, err := os.OpenFile(ruta, flags, 0644)
 	if err != nil {
-		log.Printf("[CSV] error abriendo %s: %v", ruta, err)
+		log.Printf("[CSV][ERROR] error abriendo %s: %v", ruta, err)
 		return
 	}
 	defer f.Close()
@@ -173,7 +175,7 @@ func guardarCSV(ruta string, tickets []*pb.Ticket, sobreescribir bool) {
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
-		log.Printf("[CSV] error escribiendo: %v", err)
+		log.Printf("[CSV][ERROR] error escribiendo: %v", err)
 	}
 }
 

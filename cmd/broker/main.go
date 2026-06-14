@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"discopass/colores"
 	pb "discopass/proto"
 
 	"google.golang.org/grpc"
@@ -100,6 +101,7 @@ type reporte struct {
 }
 
 func main() {
+	colores.Activar()
 	// Configuracion por flags/variables de entorno (nada hardcodeado).
 	puerto := flag.String("puerto", env("PUERTO", "50051"), "puerto donde escucha el broker")
 	dirsDB := flag.String("nodos", env("NODOS", "localhost:50061,localhost:50062,localhost:50063"), "direcciones de los nodos DB separadas por coma")
@@ -127,20 +129,20 @@ func main() {
 		dir = strings.TrimSpace(dir)
 		conn, err := grpc.NewClient(dir, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			log.Fatalf("[BROKER] no pude preparar conexion a nodo %s: %v", dir, err)
+			log.Fatalf("[BROKER][FATAL] no pude preparar conexion a nodo %s: %v", dir, err)
 		}
 		s.clientesDB = append(s.clientesDB, pb.NewNodoDBClient(conn))
 	}
 	connBanco, err := grpc.NewClient(*dirBanco, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("[BROKER] no pude preparar conexion al banco: %v", err)
+		log.Fatalf("[BROKER][FATAL] no pude preparar conexion al banco: %v", err)
 	}
 	s.banco = pb.NewBancoClient(connBanco)
 
 	// Levantar el servidor gRPC.
 	lis, err := net.Listen("tcp", ":"+*puerto)
 	if err != nil {
-		log.Fatalf("[BROKER] no pude escuchar en :%s: %v", *puerto, err)
+		log.Fatalf("[BROKER][FATAL] no pude escuchar en :%s: %v", *puerto, err)
 	}
 	grpcServer := grpc.NewServer()
 	pb.RegisterBrokerServer(grpcServer, s)
@@ -153,9 +155,9 @@ func main() {
 		}
 	}()
 
-	log.Printf("[BROKER] escuchando en :%s | nodos=%v | banco=%s", *puerto, s.dirsDB, *dirBanco)
+	log.Printf("[BROKER][INICIO] escuchando en :%s | nodos=%v | banco=%s", *puerto, s.dirsDB, *dirBanco)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("[BROKER] servidor detenido: %v", err)
+		log.Fatalf("[BROKER][FATAL] servidor detenido: %v", err)
 	}
 }
 
@@ -178,7 +180,7 @@ func (s *servidorBroker) RegistrarEntidad(_ context.Context, r *pb.Registro) (*p
 	default:
 		return &pb.Ack{Ok: false, Mensaje: "tipo de entidad desconocido"}, nil
 	}
-	log.Printf("[BROKER] registrada entidad %q (tipo=%s)", r.Id, r.Tipo)
+	log.Printf("[BROKER][REGISTRO] registrada entidad %q (tipo=%s)", r.Id, r.Tipo)
 	return &pb.Ack{Ok: true, Mensaje: "registrado"}, nil
 }
 
@@ -191,7 +193,7 @@ func (s *servidorBroker) PublicarEvento(_ context.Context, e *pb.Evento) (*pb.Pu
 	// La discoteca debe estar registrada antes de publicar.
 	if !s.discotecas[e.Discoteca] {
 		s.mu.Unlock()
-		log.Printf("[BROKER] RECHAZO evento de discoteca no registrada %q", e.Discoteca)
+		log.Printf("[BROKER][RECHAZO] RECHAZO evento de discoteca no registrada %q", e.Discoteca)
 		return &pb.PublicarResp{Aceptado: false, Motivo: "discoteca no registrada"}, nil
 	}
 	s.rep.eventosRecibidos[e.Discoteca]++
@@ -201,7 +203,7 @@ func (s *servidorBroker) PublicarEvento(_ context.Context, e *pb.Evento) (*pb.Pu
 		s.rep.eventosRechazados++
 		s.rep.rechDuplicado++
 		s.mu.Unlock()
-		log.Printf("[BROKER] evento duplicado descartado (idempotencia): %s", e.EventoId)
+		log.Printf("[BROKER][IDEMPOTENCIA] evento duplicado descartado (idempotencia): %s", e.EventoId)
 		return &pb.PublicarResp{Aceptado: false, Motivo: "evento duplicado"}, nil
 	}
 
@@ -217,7 +219,7 @@ func (s *servidorBroker) PublicarEvento(_ context.Context, e *pb.Evento) (*pb.Pu
 			s.rep.rechOtros++
 		}
 		s.mu.Unlock()
-		log.Printf("[BROKER] RECHAZO evento %s: %s", e.EventoId, motivo)
+		log.Printf("[BROKER][RECHAZO] RECHAZO evento %s: %s", e.EventoId, motivo)
 		return &pb.PublicarResp{Aceptado: false, Motivo: motivo}, nil
 	}
 
@@ -229,10 +231,10 @@ func (s *servidorBroker) PublicarEvento(_ context.Context, e *pb.Evento) (*pb.Pu
 	// Escritura distribuida N=3 / W=2.
 	acks := s.escribirEnNodos(&pb.DBItem{Tipo: "evento", Evento: e})
 	if acks >= 2 {
-		log.Printf("[BROKER] evento %s (%s) almacenado con W=%d ACK", e.EventoId, e.NombreEvento, acks)
+		log.Printf("[BROKER][EVENTO_OK] evento %s (%s) almacenado con W=%d ACK", e.EventoId, e.NombreEvento, acks)
 		return &pb.PublicarResp{Aceptado: true, Motivo: "almacenado"}, nil
 	}
-	log.Printf("[BROKER] evento %s aceptado pero escritura sin quorum (W=%d<2)", e.EventoId, acks)
+	log.Printf("[BROKER][SIN_QUORUM] evento %s aceptado pero escritura sin quorum (W=%d<2)", e.EventoId, acks)
 	return &pb.PublicarResp{Aceptado: true, Motivo: "almacenamiento sin quorum W=2"}, nil
 }
 
@@ -265,13 +267,13 @@ func (s *servidorBroker) ConsultarEventos(_ context.Context, r *pb.ConsultaReq) 
 	registrado := s.usuarios[r.IdUsuario]
 	s.mu.Unlock()
 	if !registrado {
-		log.Printf("[BROKER] consulta rechazada: usuario %q no registrado", r.IdUsuario)
+		log.Printf("[BROKER][RECHAZO] consulta rechazada: usuario %q no registrado", r.IdUsuario)
 		return &pb.ListaEventos{}, nil
 	}
 
 	eventos, ok := s.leerEventosQuorum()
 	if !ok {
-		log.Printf("[BROKER] consulta de %s sin consenso de lectura (R<2)", r.IdUsuario)
+		log.Printf("[BROKER][SIN_QUORUM] consulta de %s sin consenso de lectura (R<2)", r.IdUsuario)
 		return &pb.ListaEventos{}, nil
 	}
 	// Solo se ofrecen eventos con stock disponible.
@@ -281,7 +283,7 @@ func (s *servidorBroker) ConsultarEventos(_ context.Context, r *pb.ConsultaReq) 
 			disponibles = append(disponibles, e)
 		}
 	}
-	log.Printf("[BROKER] usuario %s consulta cartelera: %d eventos disponibles (R=2 OK)", r.IdUsuario, len(disponibles))
+	log.Printf("[BROKER][CARTELERA] usuario %s consulta cartelera: %d eventos disponibles (R=2 OK)", r.IdUsuario, len(disponibles))
 	return &pb.ListaEventos{Eventos: disponibles}, nil
 }
 
@@ -310,20 +312,20 @@ func (s *servidorBroker) ComprarEntrada(ctx context.Context, c *pb.CompraReq) (*
 	clave := c.IdUsuario + "|" + c.EventoId
 	if s.comprasUsuarioEvento[clave] {
 		s.mu.Unlock()
-		log.Printf("[BROKER] compra duplicada bloqueada: %s ya tiene entrada para %s", c.IdUsuario, c.EventoId)
+		log.Printf("[BROKER][DUPLICADO] compra duplicada bloqueada: %s ya tiene entrada para %s", c.IdUsuario, c.EventoId)
 		return &pb.CompraResp{Aprobada: false, Motivo: "compra duplicada"}, nil
 	}
 
 	// Verificacion de stock distribuida con consenso R=2.
 	stock, hayConsenso := s.stockQuorum(c.EventoId)
 	if !hayConsenso {
-		log.Printf("[BROKER] compra %s: sin consenso de lectura de stock (R<2)", c.EventoId)
+		log.Printf("[BROKER][SIN_QUORUM] compra %s: sin consenso de lectura de stock (R<2)", c.EventoId)
 		stock = evento.Stock // respaldo con el log maestro del broker
 	}
 	if stock <= 0 {
 		s.rep.rechazoSinStock++
 		s.mu.Unlock()
-		log.Printf("[BROKER] compra rechazada: evento %s sin stock", c.EventoId)
+		log.Printf("[BROKER][SIN_STOCK] compra rechazada: evento %s sin stock", c.EventoId)
 		return &pb.CompraResp{Aprobada: false, Motivo: "sin stock", NombreEvento: evento.NombreEvento}, nil
 	}
 	s.mu.Unlock()
@@ -332,18 +334,19 @@ func (s *servidorBroker) ComprarEntrada(ctx context.Context, c *pb.CompraReq) (*
 	aprobado, sinRespuesta := s.consultarPago(ctx, c.IdUsuario, evento.Precio, c.MedioPago)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if sinRespuesta {
 		s.rep.pagosSinResp++
 		s.rep.comprasPendientes++
 		s.rep.fallos = append(s.rep.fallos, fmt.Sprintf("pago PENDIENTE: usuario=%s evento=%s (banco sin respuesta)", c.IdUsuario, c.EventoId))
-		log.Printf("[BROKER] compra %s queda PENDIENTE: banco sin respuesta", c.EventoId)
+		s.mu.Unlock()
+		log.Printf("[BROKER][PAGO_PENDIENTE] compra %s queda PENDIENTE: banco sin respuesta", c.EventoId)
 		return &pb.CompraResp{Aprobada: false, Motivo: "pendiente (servicio de pago no disponible)", NombreEvento: evento.NombreEvento}, nil
 	}
 	if !aprobado {
 		s.rep.pagosRechazados++
 		s.rep.rechazoPago++
-		log.Printf("[BROKER] compra %s rechazada por el banco (fondos insuficientes)", c.EventoId)
+		s.mu.Unlock()
+		log.Printf("[BROKER][PAGO_RECHAZADO] compra %s rechazada por el banco (fondos insuficientes)", c.EventoId)
 		return &pb.CompraResp{Aprobada: false, Motivo: "pago rechazado", NombreEvento: evento.NombreEvento}, nil
 	}
 	s.rep.pagosAprobados++
@@ -363,19 +366,38 @@ func (s *servidorBroker) ComprarEntrada(ctx context.Context, c *pb.CompraReq) (*
 	s.rep.comprasAprobadas++
 	s.rep.ticketsGenerados++
 
-	// Persistir el nuevo stock del evento y el ticket en los nodos (N=3, W=2).
-	s.escribirEnNodos(&pb.DBItem{Tipo: "evento", Evento: evento})
-	s.escribirEnNodos(&pb.DBItem{Tipo: "ticket", Ticket: ticket})
-
-	log.Printf("[BROKER] compra APROBADA usuario=%s evento=%s ticket=%s stock_restante=%d",
-		c.IdUsuario, c.EventoId, ticket.TicketId, evento.Stock)
-	return &pb.CompraResp{
+	// Copia inmutable del evento para persistir fuera del lock (evita que una
+	// compra concurrente modifique el stock mientras se serializa el mensaje).
+	eventoSnap := &pb.Evento{
+		EventoId:         evento.EventoId,
+		Discoteca:        evento.Discoteca,
+		NombreEvento:     evento.NombreEvento,
+		Categoria:        evento.Categoria,
+		Comuna:           evento.Comuna,
+		Precio:           evento.Precio,
+		Stock:            evento.Stock,
+		FechaEvento:      evento.FechaEvento,
+		FechaPublicacion: evento.FechaPublicacion,
+	}
+	resp := &pb.CompraResp{
 		Aprobada:     true,
 		TicketId:     ticket.TicketId,
 		Motivo:       "aprobada",
 		NombreEvento: evento.NombreEvento,
 		Precio:       evento.Precio,
-	}, nil
+	}
+	// Liberamos el mutex ANTES de la escritura distribuida: escribirEnNodos
+	// vuelve a tomar s.mu por cada ACK, y el mutex de Go no es reentrante
+	// (mantenerlo aqui congelaria todo el broker en un deadlock).
+	s.mu.Unlock()
+
+	// Persistir el nuevo stock del evento y el ticket en los nodos (N=3, W=2).
+	s.escribirEnNodos(&pb.DBItem{Tipo: "evento", Evento: eventoSnap})
+	s.escribirEnNodos(&pb.DBItem{Tipo: "ticket", Ticket: ticket})
+
+	log.Printf("[BROKER][COMPRA_OK] compra APROBADA usuario=%s evento=%s ticket=%s stock_restante=%d",
+		c.IdUsuario, c.EventoId, ticket.TicketId, eventoSnap.Stock)
+	return resp, nil
 }
 
 // consultarPago llama al banco con un timeout. Devuelve (aprobado, sinRespuesta).
@@ -402,10 +424,10 @@ func (s *servidorBroker) ObtenerHistorial(_ context.Context, r *pb.HistorialReq)
 	}
 	tickets, ok := s.leerTicketsQuorum(r.IdUsuario)
 	if !ok {
-		log.Printf("[BROKER] historial de %s sin consenso (R<2)", r.IdUsuario)
+		log.Printf("[BROKER][SIN_QUORUM] historial de %s sin consenso (R<2)", r.IdUsuario)
 		return &pb.ListaTickets{}, nil
 	}
-	log.Printf("[BROKER] historial recuperado para %s: %d tickets (R=2 OK)", r.IdUsuario, len(tickets))
+	log.Printf("[BROKER][HISTORIAL] historial recuperado para %s: %d tickets (R=2 OK)", r.IdUsuario, len(tickets))
 	return &pb.ListaTickets{Tickets: tickets}, nil
 }
 
@@ -423,7 +445,7 @@ func (s *servidorBroker) SolicitarBacklog(_ context.Context, r *pb.BacklogReq) (
 	b.Tickets = append(b.Tickets, s.tickets...)
 	s.rep.resincros = append(s.rep.resincros,
 		fmt.Sprintf("nodo %s resincronizado: %d eventos, %d tickets", r.IdNodo, len(b.Eventos), len(b.Tickets)))
-	log.Printf("[BROKER] entregando backlog a nodo %s: %d eventos, %d tickets", r.IdNodo, len(b.Eventos), len(b.Tickets))
+	log.Printf("[BROKER][BACKLOG] entregando backlog a nodo %s: %d eventos, %d tickets", r.IdNodo, len(b.Eventos), len(b.Tickets))
 	return b, nil
 }
 
@@ -515,7 +537,7 @@ func (s *servidorBroker) leerTicketsQuorum(usuario string) ([]*pb.Ticket, bool) 
 		lt, err := c.LeerTickets(ctx, &pb.HistorialReq{IdUsuario: usuario})
 		cancel()
 		if err != nil {
-			log.Printf("[BROKER] nodo %s no respondio la lectura de tickets", s.dirsDB[i])
+			log.Printf("[BROKER][NODO_CAIDO] nodo %s no respondio la lectura de tickets", s.dirsDB[i])
 			continue
 		}
 		respuestas = append(respuestas, lt.Tickets)
@@ -546,7 +568,7 @@ func (s *servidorBroker) recolectarEventos() [][]*pb.Evento {
 		le, err := c.LeerEventos(ctx, &pb.Vacio{})
 		cancel()
 		if err != nil {
-			log.Printf("[BROKER] nodo %s no respondio la lectura de eventos", s.dirsDB[i])
+			log.Printf("[BROKER][NODO_CAIDO] nodo %s no respondio la lectura de eventos", s.dirsDB[i])
 			continue
 		}
 		respuestas = append(respuestas, le.Eventos)
@@ -660,7 +682,7 @@ func (s *servidorBroker) generarReporte(ruta string) {
 	fmt.Fprintf(&b, "===================================================================\n")
 
 	if err := os.WriteFile(ruta, []byte(b.String()), 0644); err != nil {
-		log.Printf("[BROKER] no pude escribir reporte: %v", err)
+		log.Printf("[BROKER][ERROR] no pude escribir reporte: %v", err)
 		return
 	}
 }
