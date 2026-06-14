@@ -1,6 +1,7 @@
 /bin/
 /resultados/
 .claude/
+/docs/
 run.log
 Reporte.txt
 usuario_*.csv
